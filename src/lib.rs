@@ -48,6 +48,16 @@ fn crc_checksum(bytes: &[u8]) -> u8 {
 }
 
 impl<'a> Message<'a> {
+    pub fn write<const LEN: usize>(&self, buf: &mut [u8; LEN]) -> usize {
+        if LEN < self.content.len() + 1 {
+            0
+        } else {
+            buf[..self.content.len()].copy_from_slice(self.content);
+            buf[self.content.len()] = self.crc;
+            self.content.len() + 1
+        }
+    }
+
     pub fn try_as<T>(&self) -> Result<&'a T, Error> {
         if self.content.len() != core::mem::size_of::<T>() {
             return Err(Error::SizeMismatch {
