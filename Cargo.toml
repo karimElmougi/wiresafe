@@ -1,0 +1,10 @@
+[package]
+name = "wiresafe"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = ["wiresafe-derive"]
+
+[dependencies]
+wiresafe-derive = { path = "wiresafe-derive" }
