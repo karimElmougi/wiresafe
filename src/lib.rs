@@ -20,7 +20,7 @@ impl<T: Wiresafe> From<&T> for Message<'_> {
     fn from(value: &T) -> Self {
         let ptr = value as *const T as *const u8;
         let content = unsafe { core::slice::from_raw_parts(ptr, core::mem::size_of::<T>()) };
-        let crc = content.iter().sum();
+        let crc = crc_checksum(content);
         Self { content, crc }
     }
 }
@@ -33,7 +33,7 @@ where
 
     fn try_from(slice: &'a [u8]) -> Result<Self, Self::Error> {
         if let [content @ .., crc] = slice {
-            if content.iter().sum::<u8>() != *crc {
+            if crc_checksum(content) != *crc {
                 return Err(Error::Crc);
             }
             Ok(Message { content, crc: *crc })
@@ -41,6 +41,10 @@ where
             return Err(Error::Crc);
         }
     }
+}
+
+fn crc_checksum(bytes: &[u8]) -> u8 {
+    bytes.iter().fold(0, |x, acc| acc.wrapping_add(x))
 }
 
 impl<'a> Message<'a> {
