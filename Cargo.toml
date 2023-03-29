@@ -3,8 +3,15 @@ name = "wiresafe"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+no_std = true
+
 [workspace]
 members = ["wiresafe-derive"]
 
 [dependencies]
 wiresafe-derive = { path = "wiresafe-derive" }
+
+[features]
+default = ["std"]
+std = []
