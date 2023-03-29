@@ -1,35 +1,81 @@
+#![no_std]
+
+#[cfg(feature = "std")]
+extern crate std;
+
 pub use wiresafe_derive::Wiresafe;
 
 pub trait Wiresafe: __private::Wiresafe {}
 
 impl<T: __private::Wiresafe> Wiresafe for T {}
 
-// #[derive(Wiresafe)]
-// struct MyStruct<T> {
-//     foo: i32,
-//     bar: (UnitStruct,),
-//     t: T,
-// }
-//
-// #[derive(Wiresafe)]
-// struct TupleStruct<T>(T);
-//
-// #[derive(Wiresafe)]
-// struct UnitStruct;
-//
-// #[derive(Wiresafe)]
-// enum Enum {
-//     Unit,
-//     Tuple(i32),
-//     Struct{x: i32}
-// }
-// //
-// #[derive(Wiresafe)]
-// union Union {
-//     int: i32,
-//     float: f32,
-//     arr: [u8; 8],
-// }
+#[derive(Debug)]
+#[repr(C)]
+pub struct Message<'a> {
+    pub content: &'a [u8],
+    pub crc: u8,
+}
+
+impl<T: Wiresafe> From<&T> for Message<'_> {
+    fn from(value: &T) -> Self {
+        let ptr = value as *const T as *const u8;
+        let content = unsafe { core::slice::from_raw_parts(ptr, core::mem::size_of::<T>()) };
+        let crc = content.iter().sum();
+        Self { content, crc }
+    }
+}
+
+impl<'a, 'b> TryFrom<&'a [u8]> for Message<'b>
+where
+    'a: 'b,
+{
+    type Error = Error;
+
+    fn try_from(slice: &'a [u8]) -> Result<Self, Self::Error> {
+        if let [content @ .., crc] = slice {
+            if content.iter().sum::<u8>() != *crc {
+                return Err(Error::Crc);
+            }
+            Ok(Message { content, crc: *crc })
+        } else {
+            return Err(Error::Crc);
+        }
+    }
+}
+
+impl<'a> Message<'a> {
+    pub fn try_as<T>(&self) -> Result<&'a T, Error> {
+        if self.content.len() != core::mem::size_of::<T>() {
+            return Err(Error::SizeMismatch {
+                expected: core::mem::size_of::<T>(),
+                actual: self.content.len(),
+            });
+        }
+
+        let ptr: *const u8 = self.content.as_ptr();
+        Ok(unsafe { &*(ptr as *const T) })
+    }
+}
+
+#[derive(Debug)]
+pub enum Error {
+    Crc,
+    SizeMismatch { expected: usize, actual: usize },
+}
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Error::Crc => f.write_str("CRC checksums don't match, possible data corruption"),
+            Error::SizeMismatch { expected, actual } => {
+                write!(f, "Size mismatch, expected `{expected}`, got `{actual}`")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for Error {}
 
 #[doc(hidden)]
 #[rustfmt::skip]
