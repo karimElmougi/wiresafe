@@ -8,6 +8,7 @@ members = ["wiresafe-derive"]
 
 [dependencies]
 wiresafe-derive = { path = "wiresafe-derive" }
+arrayvec = { version = "*", optional = true }
 
 [features]
 default = ["std"]

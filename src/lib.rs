@@ -5,41 +5,44 @@ extern crate std;
 
 pub use wiresafe_derive::Wiresafe;
 
-pub trait Wiresafe: __private::Wiresafe {}
+pub trait Wiresafe: __private::Wiresafe + Sized {
+    fn try_from_bytes(bytes: &[u8]) -> Result<&Self, Error> {
+        read(bytes).and_then(try_as)
+    }
 
-impl<T: __private::Wiresafe> Wiresafe for T {}
+    fn as_bytes(&self) -> &[u8] {
+        as_bytes(self)
+    }
 
-#[derive(Debug)]
-#[repr(C)]
-pub struct Message<'a> {
-    pub content: &'a [u8],
-    pub crc: u8,
-}
-
-impl<T: Wiresafe> From<&T> for Message<'_> {
-    fn from(value: &T) -> Self {
-        let ptr = value as *const T as *const u8;
-        let content = unsafe { core::slice::from_raw_parts(ptr, core::mem::size_of::<T>()) };
-        let crc = crc_checksum(content);
-        Self { content, crc }
+    fn write_into<const N: usize>(&self, dst: &mut [u8; N]) -> usize {
+        write(self.as_bytes(), dst)
     }
 }
 
-impl<'a, 'b> TryFrom<&'a [u8]> for Message<'b>
-where
-    'a: 'b,
-{
-    type Error = Error;
+impl<T: __private::Wiresafe> Wiresafe for T {}
 
-    fn try_from(slice: &'a [u8]) -> Result<Self, Self::Error> {
-        if let [content @ .., crc] = slice {
+fn read(bytes: &[u8]) -> Result<&[u8], Error> {
+    match bytes {
+        [content @ .., crc] => {
             if crc_checksum(content) != *crc {
-                return Err(Error::Crc);
+                return Err(Error::Checksum);
             }
-            Ok(Message { content, crc: *crc })
-        } else {
-            return Err(Error::Crc);
+            Ok(content)
         }
+        _ => Err(Error::SizeMismatch {
+            expected: 1,
+            actual: bytes.len(),
+        }),
+    }
+}
+
+fn write<const N: usize>(src: &[u8], dst: &mut [u8; N]) -> usize {
+    if N < src.len() + 1 {
+        0
+    } else {
+        dst[..src.len()].copy_from_slice(src);
+        dst[src.len()] = crc_checksum(src);
+        src.len() + 1
     }
 }
 
@@ -47,40 +50,33 @@ fn crc_checksum(bytes: &[u8]) -> u8 {
     bytes.iter().fold(0, |x, acc| acc.wrapping_add(x))
 }
 
-impl<'a> Message<'a> {
-    pub fn write<const LEN: usize>(&self, buf: &mut [u8; LEN]) -> usize {
-        if LEN < self.content.len() + 1 {
-            0
-        } else {
-            buf[..self.content.len()].copy_from_slice(self.content);
-            buf[self.content.len()] = self.crc;
-            self.content.len() + 1
-        }
+fn as_bytes<T>(t: &T) -> &[u8] {
+    let ptr = t as *const T as *const u8;
+    unsafe { core::slice::from_raw_parts(ptr, core::mem::size_of::<T>()) }
+}
+
+fn try_as<'a, T>(bytes: &[u8]) -> Result<&'a T, Error> {
+    if bytes.len() != core::mem::size_of::<T>() {
+        return Err(Error::SizeMismatch {
+            expected: core::mem::size_of::<T>(),
+            actual: bytes.len(),
+        });
     }
 
-    pub fn try_as<T>(&self) -> Result<&'a T, Error> {
-        if self.content.len() != core::mem::size_of::<T>() {
-            return Err(Error::SizeMismatch {
-                expected: core::mem::size_of::<T>(),
-                actual: self.content.len(),
-            });
-        }
-
-        let ptr: *const u8 = self.content.as_ptr();
-        Ok(unsafe { &*(ptr as *const T) })
-    }
+    let ptr: *const u8 = bytes.as_ptr();
+    Ok(unsafe { &*(ptr as *const T) })
 }
 
 #[derive(Debug)]
 pub enum Error {
-    Crc,
+    Checksum,
     SizeMismatch { expected: usize, actual: usize },
 }
 
 impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Error::Crc => f.write_str("CRC checksums don't match, possible data corruption"),
+            Error::Checksum => f.write_str("CRC checksums don't match, possible data corruption"),
             Error::SizeMismatch { expected, actual } => {
                 write!(f, "Size mismatch, expected `{expected}`, got `{actual}`")
             }
@@ -179,5 +175,48 @@ pub mod __private {
     #[cfg(feature = "std")] impl Wiresafe for std::net::SocketAddrV6 { fn check() {} }
 
     #[cfg(feature = "std")] impl<T: Wiresafe> Wiresafe for std::io::Cursor<T> { fn check() {} }
+
+    #[cfg(feature = "arrayvec")] impl<T: Wiresafe, const N: usize> Wiresafe for arrayvec::ArrayVec<T, N> { fn check() {} }
+    #[cfg(feature = "arrayvec")] impl<const N: usize> Wiresafe for arrayvec::ArrayString<N> { fn check() {} }
     // ...
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct Data {
+        x: i32,
+        y: u8,
+        zero: Zero,
+    }
+
+    impl __private::Wiresafe for Data {
+        fn check() {}
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct Zero;
+
+    impl __private::Wiresafe for Zero {
+        fn check() {}
+    }
+
+    #[test]
+    fn roundtrip() {
+        let data = Data {
+            x: -5,
+            y: 10,
+            zero: Zero,
+        };
+
+        let mut buf = [0u8; 32];
+        let written = data.write_into(&mut buf);
+        let bytes = &buf[..written];
+
+        let data2 = Data::try_from_bytes(bytes).unwrap();
+
+        assert_eq!(data, *data2);
+    }
 }

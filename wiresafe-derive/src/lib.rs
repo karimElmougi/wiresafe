@@ -48,8 +48,7 @@ fn struct_field_types(data: &syn::DataStruct) -> Vec<&syn::Type> {
 fn enum_field_types(data: &syn::DataEnum) -> Vec<&syn::Type> {
     data.variants
         .iter()
-        .map(|var| field_types(&var.fields))
-        .flatten()
+        .flat_map(|var| field_types(&var.fields))
         .collect()
 }
 
