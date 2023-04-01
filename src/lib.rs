@@ -5,49 +5,47 @@ extern crate std;
 
 pub use wiresafe_derive::Wiresafe;
 
-pub trait Wiresafe: __private::Wiresafe + Sized {
-    fn try_from_bytes(bytes: &[u8]) -> Result<&Self, Error> {
-        read(bytes).and_then(try_as)
-    }
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Message<T: Wiresafe> {
+    pub content: T,
+    crc: u32,
+}
 
-    fn as_bytes(&self) -> &[u8] {
-        as_bytes(self)
-    }
+impl<T: __private::Wiresafe> __private::Wiresafe for Message<T>  { fn check() {} }
 
-    fn write_into<const N: usize>(&self, dst: &mut [u8; N]) -> usize {
-        write(self.as_bytes(), dst)
+impl<T: Wiresafe> From<T> for Message<T> {
+    fn from(content: T) -> Self {
+        let crc = crc32fast::hash(as_bytes(&content));
+        Message {content, crc}
     }
 }
 
-impl<T: __private::Wiresafe> Wiresafe for T {}
+impl<'a, T: Wiresafe> From<&'a Message<T>> for &'a [u8] {
+    fn from(value: &'a Message<T>) -> Self {
+        as_bytes(value)
+    }
+}
 
-fn read(bytes: &[u8]) -> Result<&[u8], Error> {
-    match bytes {
-        [content @ .., crc] => {
-            if crc_checksum(content) != *crc {
-                return Err(Error::Checksum);
-            }
-            Ok(content)
+impl<'a, T: Wiresafe> TryFrom<&'a [u8]> for &'a Message<T> {
+    type Error = Error;
+
+    fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
+        let msg = try_as::<Message<T>>(value)?;
+        let crc = crc32fast::hash(as_bytes(&msg.content));
+        if crc == msg.crc {
+            Ok(msg)
         }
-        _ => Err(Error::SizeMismatch {
-            expected: 1,
-            actual: bytes.len(),
-        }),
+        else {
+            Err(Error::Checksum)
+        }
     }
 }
 
-fn write<const N: usize>(src: &[u8], dst: &mut [u8; N]) -> usize {
-    if N < src.len() + 1 {
-        0
-    } else {
-        dst[..src.len()].copy_from_slice(src);
-        dst[src.len()] = crc_checksum(src);
-        src.len() + 1
+impl<T: Wiresafe> Message<T> {
+    pub fn try_from_bytes(bytes: &[u8]) -> Result<&Self, Error> {
+        <&Self>::try_from(bytes)
     }
-}
-
-fn crc_checksum(bytes: &[u8]) -> u8 {
-    bytes.iter().fold(0, |x, acc| acc.wrapping_add(x))
 }
 
 fn as_bytes<T>(t: &T) -> &[u8] {
@@ -66,6 +64,10 @@ fn try_as<'a, T>(bytes: &[u8]) -> Result<&'a T, Error> {
     let ptr: *const u8 = bytes.as_ptr();
     Ok(unsafe { &*(ptr as *const T) })
 }
+
+pub trait Wiresafe: __private::Wiresafe + Sized {}
+
+impl<T: __private::Wiresafe> Wiresafe for T {}
 
 #[derive(Debug)]
 pub enum Error {
@@ -183,13 +185,17 @@ pub mod __private {
 
 #[cfg(test)]
 mod tests {
+    use core::borrow::Borrow;
+
     use super::*;
 
+    #[repr(C)]
     #[derive(Debug, PartialEq, Eq)]
     struct Data {
         x: i32,
         y: u8,
         zero: Zero,
+        z: u8,
     }
 
     impl __private::Wiresafe for Data {
@@ -209,14 +215,12 @@ mod tests {
             x: -5,
             y: 10,
             zero: Zero,
+            z: 1
         };
 
-        let mut buf = [0u8; 32];
-        let written = data.write_into(&mut buf);
-        let bytes = &buf[..written];
-
-        let data2 = Data::try_from_bytes(bytes).unwrap();
-
-        assert_eq!(data, *data2);
+        let msg = Message::from(data);
+        let bytes: &[u8] = msg.borrow().into();
+        let msg2 = Message::<Data>::try_from_bytes(bytes).unwrap();
+        assert_eq!(msg.content, msg2.content);
     }
 }
