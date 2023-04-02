@@ -75,7 +75,7 @@ impl<T: Wiresafe> Message<T> {
         if N != core::mem::size_of::<Self>() {
             panic!("Requested size isn't equal to `size_of::<Self>()`");
         }
-        AlignedBytes::new()
+        AlignedBytes::zeroed()
     }
 
     pub fn try_from_aligned<const N: usize>(bytes: &AlignedBytes<N, Self>) -> Result<&Self, Error> {
@@ -97,43 +97,29 @@ const fn as_bytes<T>(t: &T) -> &[u8] {
     unsafe { core::slice::from_raw_parts(ptr, core::mem::size_of::<T>()) }
 }
 
-#[repr(C)]
-pub struct Aligned<T: Sized, U: Sized> {
-    value: T,
-    _align: [U; 0],
+pub struct AlignedBytes<const N: usize, T> {
+    _align: [T; 0],
+    value: [u8; N],
 }
 
-impl<T, U> Aligned<T, U> {
-    pub const fn new(value: T) -> Self {
-        Aligned { value, _align: [] }
+impl<const N: usize, T> AlignedBytes<N, T> {
+    const fn zeroed() -> Self {
+        Self {
+            value: [0u8; N],
+            _align: [],
+        }
     }
+}
 
-    pub const fn value(&self) -> &T {
+impl<const N: usize, T> AsRef<[u8; N]> for AlignedBytes<N, T> {
+    fn as_ref(&self) -> &[u8; N] {
         &self.value
     }
-
-    pub fn value_mut(&mut self) -> &mut T {
-        &mut self.value
-    }
 }
 
-pub struct AlignedBytes<const N: usize, U>(Aligned<[u8; N], U>);
-
-impl<const N: usize, U> AlignedBytes<N, U> {
-    const fn new() -> Self {
-        Self(Aligned::new([0u8; N]))
-    }
-}
-
-impl<const N: usize, U> AsRef<[u8; N]> for AlignedBytes<N, U> {
-    fn as_ref(&self) -> &[u8; N] {
-        &self.0.value
-    }
-}
-
-impl<const N: usize, U> AsMut<[u8; N]> for AlignedBytes<N, U> {
+impl<const N: usize, T> AsMut<[u8; N]> for AlignedBytes<N, T> {
     fn as_mut(&mut self) -> &mut [u8; N] {
-        &mut self.0.value
+        &mut self.value
     }
 }
 
@@ -294,5 +280,51 @@ mod tests {
 
         let msg2 = Message::<Data>::try_from_aligned(&aligned).unwrap();
         assert_eq!(msg, *msg2);
+    }
+
+    macro_rules! assert_aligned {
+        ($ty:ty) => {
+            assert_eq!(
+                core::mem::align_of::<AlignedBytes<0, $ty>>(),
+                core::mem::align_of::<$ty>()
+            );
+        };
+    }
+
+    #[test]
+    #[allow(dead_code)]
+    fn align() {
+        /// 2-byte alignment
+        #[repr(align(2))]
+        struct A2;
+
+        /// 4-byte alignment
+        #[repr(align(4))]
+        struct A4;
+
+        /// 8-byte alignment
+        #[repr(align(8))]
+        struct A8;
+
+        /// 16-byte alignment
+        #[repr(align(16))]
+        struct A16;
+
+        /// 32-byte alignment
+        #[repr(align(32))]
+        struct A32;
+
+        /// 64-byte alignment
+        #[repr(align(64))]
+        struct A64;
+
+        assert_aligned!(Data);
+        assert_aligned!(u8);
+        assert_aligned!(A2);
+        assert_aligned!(A4);
+        assert_aligned!(A8);
+        assert_aligned!(A16);
+        assert_aligned!(A32);
+        assert_aligned!(A64);
     }
 }
