@@ -39,22 +39,6 @@ impl<'a, T: Wiresafe> TryFrom<&'a [u8]> for &'a Message<T> {
     }
 }
 
-#[repr(C)]
-pub struct Aligned<T: Sized, U: Sized> {
-    value: T,
-    _align: [U; 0],
-}
-
-impl<T, U> Aligned<T, U> {
-    pub const fn value(&self) -> &T {
-        &self.value
-    }
-
-    pub fn value_mut(&mut self) -> &mut T {
-        &mut self.value
-    }
-}
-
 impl<T: Wiresafe> Message<T> {
     #[cfg(feature = "std")]
     pub fn read_from<R: std::io::Read>(mut reader: R) -> std::io::Result<Self> {
@@ -137,6 +121,22 @@ fn try_as<'a, T>(bytes: &[u8]) -> Result<&'a T, Error> {
         Ok(unsafe { &*ptr })
     } else {
         Err(Error::Alignment)
+    }
+}
+
+#[repr(C)]
+pub struct Aligned<T: Sized, U: Sized> {
+    value: T,
+    _align: [U; 0],
+}
+
+impl<T, U> Aligned<T, U> {
+    pub const fn value(&self) -> &T {
+        &self.value
+    }
+
+    pub fn value_mut(&mut self) -> &mut T {
+        &mut self.value
     }
 }
 
@@ -320,11 +320,12 @@ mod tests {
 
     #[test]
     fn align() {
-        use core::mem::align_of;
-        assert_eq!(
-            align_of::<Aligned<[u8; 12], Message<Data>>>(),
-            align_of::<Message<Data>>()
-        );
+        let aligned = Aligned::<[u8; 12], Message<Data>> {
+            _align: [],
+            value: [0u8; 12],
+        };
+        let ptr = aligned.value().as_ptr() as *const Message<Data>;
+        assert!(ptr.is_aligned());
     }
 
     #[test]
