@@ -169,6 +169,11 @@ impl<T: Wiresafe> BoxedMessage<T> {
         &mut self.0.content
     }
 
+    /// Converts a [BoxedMessage] to a byte lice.
+    pub fn as_bytes(&self) -> &[u8] {
+        self.as_ref().as_bytes()
+    }
+
     /// Attempts to read a message from the given reader, checking for validity using a CRC32
     /// checksum.
     pub fn read_from<R: std::io::Read>(mut reader: R) -> std::io::Result<Self> {
