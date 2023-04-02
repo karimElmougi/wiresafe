@@ -31,6 +31,8 @@ impl<'a, T: Wiresafe> From<&'a Message<T>> for &'a [u8] {
 
 impl<T: Wiresafe> Message<T> {
     #[cfg(feature = "std")]
+    /// Attempts to read a message from the given reader, checking for validity using a CRC32
+    /// checksum.
     pub fn read_from<R: std::io::Read>(mut reader: R) -> std::io::Result<Self> {
         let mut msg = core::mem::MaybeUninit::<Self>::uninit();
 
@@ -54,22 +56,28 @@ impl<T: Wiresafe> Message<T> {
     }
 
     #[cfg(feature = "std")]
+    /// Attempts to write the message to the given writer.
     pub fn write_into<W: std::io::Write>(&self, mut writer: W) -> std::io::Result<()> {
         writer.write_all(self.into())
     }
 
+    /// Converts a [Message] to a byte lice.
     pub fn as_bytes(&self) -> &[u8] {
         as_bytes(self)
     }
 
     // TODO: get rid of the N when `generic_const_exprs` is stabilized in some form.
-    pub const fn uninit<const N: usize>() -> AlignedBytes<N, Message<T>> {
+    /// Initialized a zeroed array with the same size and memory alignment as [Message].
+    pub const fn uninit<const N: usize>() -> AlignedBytes<N, Self> {
         if N != core::mem::size_of::<Self>() {
             panic!("Requested size isn't equal to `size_of::<Self>()`");
         }
         AlignedBytes::zeroed()
     }
 
+    /// Attempts to convert the given [AlignedBytes] without copying. Validity is checked using a
+    /// CRC32 checksum.
+    ///
     /// # Safety
     /// The bytes in the array must correspond to valid byte patterns for the fields of `T`.
     pub unsafe fn try_from_aligned<const N: usize>(
@@ -82,6 +90,26 @@ impl<T: Wiresafe> Message<T> {
         let crc = crc32fast::hash(as_bytes(&msg.content));
         if crc == msg.crc {
             Ok(msg)
+        } else {
+            Err(Error::Checksum)
+        }
+    }
+}
+
+impl<T: Wiresafe + Copy> Message<T> {
+    // TODO: get rid of the Copy requirement when `generic_const_exprs` is stabilized in some form.
+    /// Attempts to convert the given [AlignedBytes]. Validity is checked using a CRC32 checksum.
+    ///
+    /// # Safety
+    /// The bytes in the array must correspond to valid byte patterns for the fields of `T`.
+    pub unsafe fn try_from_aligned_copy<const N: usize>(bytes: AlignedBytes<N, Self>) -> Result<Self, Error> {
+        // Skip size check since the only way to create `AlignedBytes` is through `Self::uninit`
+        let ptr = bytes.as_ref().as_ptr() as *const Self;
+        let msg = &*ptr;
+
+        let crc = crc32fast::hash(as_bytes(&msg.content));
+        if crc == msg.crc {
+            Ok(*msg)
         } else {
             Err(Error::Checksum)
         }
