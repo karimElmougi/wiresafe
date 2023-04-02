@@ -161,6 +161,20 @@ pub mod __private {
     impl Wiresafe for char { fn check() {} }
     impl Wiresafe for bool { fn check() {} }
 
+    #[cfg(target_arch = "x86")] impl Wiresafe for std::arch::x86::__m128 { fn check() {} }
+    #[cfg(target_arch = "x86")] impl Wiresafe for std::arch::x86::__m128d { fn check() {} }
+    #[cfg(target_arch = "x86")] impl Wiresafe for std::arch::x86::__m128i { fn check() {} }
+    #[cfg(target_arch = "x86")] impl Wiresafe for std::arch::x86::__m256 { fn check() {} }
+    #[cfg(target_arch = "x86")] impl Wiresafe for std::arch::x86::__m256d { fn check() {} }
+    #[cfg(target_arch = "x86")] impl Wiresafe for std::arch::x86::__m256i { fn check() {} }
+
+    #[cfg(target_arch = "x86_64")] impl Wiresafe for std::arch::x86_64::__m128 { fn check() {} }
+    #[cfg(target_arch = "x86_64")] impl Wiresafe for std::arch::x86_64::__m128d { fn check() {} }
+    #[cfg(target_arch = "x86_64")] impl Wiresafe for std::arch::x86_64::__m128i { fn check() {} }
+    #[cfg(target_arch = "x86_64")] impl Wiresafe for std::arch::x86_64::__m256 { fn check() {} }
+    #[cfg(target_arch = "x86_64")] impl Wiresafe for std::arch::x86_64::__m256d { fn check() {} }
+    #[cfg(target_arch = "x86_64")] impl Wiresafe for std::arch::x86_64::__m256i { fn check() {} }
+
     impl<T: Wiresafe, const N: usize> Wiresafe for [T; N] { fn check() {} }
 
     impl Wiresafe for () { fn check() {} }
@@ -172,6 +186,7 @@ pub mod __private {
     impl<T0: Wiresafe, T1: Wiresafe, T2: Wiresafe, T3: Wiresafe, T4: Wiresafe, T5: Wiresafe> Wiresafe for (T0, T1, T2, T3, T4, T5) { fn check() {} }
 
     impl<T: Wiresafe> Wiresafe for core::marker::PhantomData<T> { fn check() {} }
+    impl Wiresafe for core::marker::PhantomPinned { fn check() {} }
 
     impl<T: Wiresafe> Wiresafe for core::mem::ManuallyDrop<T> { fn check() {} }
 
