@@ -1,6 +1,4 @@
 #![no_std]
-#![feature(pointer_is_aligned)]
-// #![feature(generic_const_exprs)]
 
 #[cfg(feature = "std")]
 extern crate std;
@@ -31,11 +29,11 @@ impl<'a, T: Wiresafe> From<&'a Message<T>> for &'a [u8] {
     }
 }
 
-impl<'a, T: Wiresafe> TryFrom<&'a [u8]> for &'a Message<T> {
+impl<'a, T: Wiresafe, const N: usize> TryFrom<&'a AlignedBytes<N, Message<T>>> for &'a Message<T> {
     type Error = Error;
 
-    fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Error> {
-        Message::try_from_bytes(bytes)
+    fn try_from(bytes: &'a AlignedBytes<N, Message<T>>) -> Result<Self, Self::Error> {
+        Message::<T>::try_from_aligned(bytes)
     }
 }
 
@@ -72,28 +70,19 @@ impl<T: Wiresafe> Message<T> {
         as_bytes(self)
     }
 
-    pub const fn init_byte_array<const N: usize>() -> Aligned<[u8; N], Message<T>> {
+    // TODO: get rid of the N when `generic_const_exprs` is stabilized in some form.
+    pub const fn uninit<const N: usize>() -> AlignedBytes<N, Message<T>> {
         if N != core::mem::size_of::<Self>() {
             panic!("Requested size isn't equal to `size_of::<Self>()`");
         }
-        Aligned::<_, Self> {
-            _align: [],
-            value: [0u8; N],
-        }
+        AlignedBytes::new()
     }
 
-    // pub fn init_byte_array() -> [u8; core::mem::size_of::<Self>()]
-    // where
-    //     [u8; core::mem::size_of::<Self>()]:,
-    // {
-    //     let msg = unsafe { core::mem::MaybeUninit::<Self>::zeroed().assume_init() };
-    //     // TODO: use core::mem::tranmute instead when better support for generic consts is
-    //     // stabilized.
-    //     unsafe { msg.as_bytes().try_into().unwrap_unchecked() }
-    // }
+    pub fn try_from_aligned<const N: usize>(bytes: &AlignedBytes<N, Self>) -> Result<&Self, Error> {
+        // Skip size check since the only way to create `AlignedBytes` is through `Self::uninit`
+        let ptr = bytes.as_ref().as_ptr() as *const Self;
+        let msg = unsafe { &*ptr };
 
-    pub fn try_from_bytes(bytes: &[u8]) -> Result<&Self, Error> {
-        let msg = try_as::<Message<T>>(bytes)?;
         let crc = crc32fast::hash(as_bytes(&msg.content));
         if crc == msg.crc {
             Ok(msg)
@@ -108,22 +97,6 @@ const fn as_bytes<T>(t: &T) -> &[u8] {
     unsafe { core::slice::from_raw_parts(ptr, core::mem::size_of::<T>()) }
 }
 
-fn try_as<'a, T>(bytes: &[u8]) -> Result<&'a T, Error> {
-    if bytes.len() != core::mem::size_of::<T>() {
-        return Err(Error::SizeMismatch {
-            expected: core::mem::size_of::<T>(),
-            actual: bytes.len(),
-        });
-    }
-
-    let ptr = bytes.as_ptr() as *const T;
-    if ptr.is_aligned() {
-        Ok(unsafe { &*ptr })
-    } else {
-        Err(Error::Alignment)
-    }
-}
-
 #[repr(C)]
 pub struct Aligned<T: Sized, U: Sized> {
     value: T,
@@ -131,12 +104,36 @@ pub struct Aligned<T: Sized, U: Sized> {
 }
 
 impl<T, U> Aligned<T, U> {
+    pub const fn new(value: T) -> Self {
+        Aligned { value, _align: [] }
+    }
+
     pub const fn value(&self) -> &T {
         &self.value
     }
 
     pub fn value_mut(&mut self) -> &mut T {
         &mut self.value
+    }
+}
+
+pub struct AlignedBytes<const N: usize, U>(Aligned<[u8; N], U>);
+
+impl<const N: usize, U> AlignedBytes<N, U> {
+    const fn new() -> Self {
+        Self(Aligned::new([0u8; N]))
+    }
+}
+
+impl<const N: usize, U> AsRef<[u8; N]> for AlignedBytes<N, U> {
+    fn as_ref(&self) -> &[u8; N] {
+        &self.0.value
+    }
+}
+
+impl<const N: usize, U> AsMut<[u8; N]> for AlignedBytes<N, U> {
+    fn as_mut(&mut self) -> &mut [u8; N] {
+        &mut self.0.value
     }
 }
 
@@ -147,18 +144,12 @@ impl<T: __private::Wiresafe> Wiresafe for T {}
 #[derive(Debug)]
 pub enum Error {
     Checksum,
-    Alignment,
-    SizeMismatch { expected: usize, actual: usize },
 }
 
 impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Error::Checksum => f.write_str("CRC checksums don't match, possible data corruption"),
-            Error::Alignment => f.write_str("Bytes aren't aligned properly"),
-            Error::SizeMismatch { expected, actual } => {
-                write!(f, "Size mismatch, expected `{expected}`, got `{actual}`")
-            }
         }
     }
 }
@@ -198,9 +189,6 @@ pub mod __private {
     impl<T0: Wiresafe, T1: Wiresafe, T2: Wiresafe, T3: Wiresafe, T4: Wiresafe> Wiresafe for (T0, T1, T2, T3, T4) { fn check() {} }
     impl<T0: Wiresafe, T1: Wiresafe, T2: Wiresafe, T3: Wiresafe, T4: Wiresafe, T5: Wiresafe> Wiresafe for (T0, T1, T2, T3, T4, T5) { fn check() {} }
 
-    impl<T: Wiresafe> Wiresafe for core::cell::UnsafeCell<T> { fn check() {} }
-    impl<T: Wiresafe> Wiresafe for core::cell::Cell<T> { fn check() {} }
-
     impl<T: Wiresafe> Wiresafe for core::marker::PhantomData<T> { fn check() {} }
 
     impl<T: Wiresafe> Wiresafe for core::mem::ManuallyDrop<T> { fn check() {} }
@@ -226,17 +214,6 @@ pub mod __private {
     impl<T: Wiresafe> Wiresafe for core::ops::RangeToInclusive<T> { fn check() {} }
     impl<T: Wiresafe> Wiresafe for core::ops::Bound<T> { fn check() {} }
     impl<T: Wiresafe> Wiresafe for core::ops::ControlFlow<T> { fn check() {} }
-
-    impl Wiresafe for core::sync::atomic::AtomicBool { fn check() {} }
-    impl Wiresafe for core::sync::atomic::AtomicI8 { fn check() {} }
-    impl Wiresafe for core::sync::atomic::AtomicU8 { fn check() {} }
-    impl Wiresafe for core::sync::atomic::AtomicI16 { fn check() {} }
-    impl Wiresafe for core::sync::atomic::AtomicU16 { fn check() {} }
-    impl Wiresafe for core::sync::atomic::AtomicI32 { fn check() {} }
-    impl Wiresafe for core::sync::atomic::AtomicU32 { fn check() {} }
-    impl Wiresafe for core::sync::atomic::AtomicI64 { fn check() {} }
-    impl Wiresafe for core::sync::atomic::AtomicU64 { fn check() {} }
-    impl Wiresafe for core::sync::atomic::Ordering { fn check() {} }
 
     impl Wiresafe for core::time::Duration { fn check() {} }
 
@@ -287,22 +264,6 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip() {
-        let data = Data {
-            x: -5,
-            y: 10,
-            zero: Zero,
-            z: 1,
-        };
-
-        let msg = Message::from(data);
-        let bytes: &[u8] = msg.borrow().into();
-        let msg2 = Message::<Data>::try_from_bytes(bytes).unwrap();
-
-        assert_eq!(msg.content, msg2.content);
-    }
-
-    #[test]
     fn roundtrip_reader() {
         let data = Data {
             x: -5,
@@ -319,17 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn align() {
-        let aligned = Aligned::<[u8; 12], Message<Data>> {
-            _align: [],
-            value: [0u8; 12],
-        };
-        let ptr = aligned.value().as_ptr() as *const Message<Data>;
-        assert!(ptr.is_aligned());
-    }
-
-    #[test]
-    fn byte_array() {
+    fn roundtrip_array() {
         let data = Data {
             x: -5,
             y: 10,
@@ -338,10 +289,10 @@ mod tests {
         };
         let msg = Message::from(data);
 
-        let mut aligned = Message::<Data>::init_byte_array::<12>();
-        aligned.value_mut().copy_from_slice(msg.as_bytes());
+        let mut aligned = Message::<Data>::uninit::<12>();
+        aligned.as_mut().copy_from_slice(msg.as_bytes());
 
-        let msg2 = Message::<Data>::try_from_bytes(aligned.value().as_slice()).unwrap();
+        let msg2 = Message::<Data>::try_from_aligned(&aligned).unwrap();
         assert_eq!(msg, *msg2);
     }
 }
