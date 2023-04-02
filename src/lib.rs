@@ -89,7 +89,7 @@ impl<T: Wiresafe> Message<T> {
     /// The bytes in the array must correspond to valid byte patterns for the fields of `T`.
     pub unsafe fn try_from_aligned<const N: usize>(
         bytes: &AlignedBytes<N, Self>,
-    ) -> Result<&Self, Error> {
+    ) -> Result<&Self, ChecksumError> {
         // Skip size check since the only way to create `AlignedBytes` is through `Self::uninit`
         let ptr = bytes.as_ref().as_ptr() as *const Self;
         let msg = &*ptr;
@@ -98,7 +98,7 @@ impl<T: Wiresafe> Message<T> {
         if crc == msg.crc {
             Ok(msg)
         } else {
-            Err(Error::Checksum)
+            Err(ChecksumError)
         }
     }
 }
@@ -111,7 +111,7 @@ impl<T: Wiresafe + Copy> Message<T> {
     /// The bytes in the array must correspond to valid byte patterns for the fields of `T`.
     pub unsafe fn try_from_aligned_copy<const N: usize>(
         bytes: AlignedBytes<N, Self>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, ChecksumError> {
         // Skip size check since the only way to create `AlignedBytes` is through `Self::uninit`
         let ptr = bytes.as_ref().as_ptr() as *const Self;
         let msg = &*ptr;
@@ -120,7 +120,7 @@ impl<T: Wiresafe + Copy> Message<T> {
         if crc == msg.crc {
             Ok(*msg)
         } else {
-            Err(Error::Checksum)
+            Err(ChecksumError)
         }
     }
 }
@@ -246,20 +246,16 @@ pub trait Wiresafe: __private::Wiresafe + Sized {
 impl<T: __private::Wiresafe> Wiresafe for T {}
 
 #[derive(Debug)]
-pub enum Error {
-    Checksum,
-}
+pub struct ChecksumError;
 
-impl core::fmt::Display for Error {
+impl core::fmt::Display for ChecksumError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Error::Checksum => f.write_str("CRC checksums don't match, possible data corruption"),
-        }
+        f.write_str("CRC checksums don't match, possible data corruption")
     }
 }
 
 #[cfg(feature = "std")]
-impl std::error::Error for Error {}
+impl std::error::Error for ChecksumError {}
 
 #[doc(hidden)]
 #[rustfmt::skip]
