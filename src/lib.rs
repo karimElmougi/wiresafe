@@ -1,4 +1,6 @@
 #![no_std]
+#![feature(pointer_is_aligned)]
+// #![feature(generic_const_exprs)]
 
 #[cfg(feature = "std")]
 extern crate std;
@@ -12,12 +14,14 @@ pub struct Message<T: Wiresafe> {
     crc: u32,
 }
 
-impl<T: __private::Wiresafe> __private::Wiresafe for Message<T>  { fn check() {} }
+impl<T: __private::Wiresafe> __private::Wiresafe for Message<T> {
+    fn check() {}
+}
 
 impl<T: Wiresafe> From<T> for Message<T> {
     fn from(content: T) -> Self {
         let crc = crc32fast::hash(as_bytes(&content));
-        Message {content, crc}
+        Message { content, crc }
     }
 }
 
@@ -30,25 +34,92 @@ impl<'a, T: Wiresafe> From<&'a Message<T>> for &'a [u8] {
 impl<'a, T: Wiresafe> TryFrom<&'a [u8]> for &'a Message<T> {
     type Error = Error;
 
-    fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
-        let msg = try_as::<Message<T>>(value)?;
+    fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Error> {
+        Message::try_from_bytes(bytes)
+    }
+}
+
+#[repr(C)]
+pub struct Aligned<T: Sized, U: Sized> {
+    value: T,
+    _align: [U; 0],
+}
+
+impl<T, U> Aligned<T, U> {
+    pub const fn value(&self) -> &T {
+        &self.value
+    }
+
+    pub fn value_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+}
+
+impl<T: Wiresafe> Message<T> {
+    #[cfg(feature = "std")]
+    pub fn read_from<R: std::io::Read>(mut reader: R) -> std::io::Result<Self> {
+        let mut msg = core::mem::MaybeUninit::<Self>::uninit();
+
+        let ptr = msg.as_mut_ptr() as *mut u8;
+        let len = core::mem::size_of::<Self>();
+        let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
+
+        reader.read_exact(buf)?;
+
+        let msg = unsafe { msg.assume_init() };
+
         let crc = crc32fast::hash(as_bytes(&msg.content));
         if crc == msg.crc {
             Ok(msg)
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Checksum verification failed",
+            ))
         }
-        else {
+    }
+
+    #[cfg(feature = "std")]
+    pub fn write_into<W: std::io::Write>(&self, mut writer: W) -> std::io::Result<()> {
+        writer.write_all(self.into())
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        as_bytes(self)
+    }
+
+    pub const fn init_byte_array<const N: usize>() -> Aligned<[u8; N], Message<T>> {
+        if N != core::mem::size_of::<Self>() {
+            panic!("Requested size isn't equal to `size_of::<Self>()`");
+        }
+        Aligned::<_, Self> {
+            _align: [],
+            value: [0u8; N],
+        }
+    }
+
+    // pub fn init_byte_array() -> [u8; core::mem::size_of::<Self>()]
+    // where
+    //     [u8; core::mem::size_of::<Self>()]:,
+    // {
+    //     let msg = unsafe { core::mem::MaybeUninit::<Self>::zeroed().assume_init() };
+    //     // TODO: use core::mem::tranmute instead when better support for generic consts is
+    //     // stabilized.
+    //     unsafe { msg.as_bytes().try_into().unwrap_unchecked() }
+    // }
+
+    pub fn try_from_bytes(bytes: &[u8]) -> Result<&Self, Error> {
+        let msg = try_as::<Message<T>>(bytes)?;
+        let crc = crc32fast::hash(as_bytes(&msg.content));
+        if crc == msg.crc {
+            Ok(msg)
+        } else {
             Err(Error::Checksum)
         }
     }
 }
 
-impl<T: Wiresafe> Message<T> {
-    pub fn try_from_bytes(bytes: &[u8]) -> Result<&Self, Error> {
-        <&Self>::try_from(bytes)
-    }
-}
-
-fn as_bytes<T>(t: &T) -> &[u8] {
+const fn as_bytes<T>(t: &T) -> &[u8] {
     let ptr = t as *const T as *const u8;
     unsafe { core::slice::from_raw_parts(ptr, core::mem::size_of::<T>()) }
 }
@@ -61,8 +132,12 @@ fn try_as<'a, T>(bytes: &[u8]) -> Result<&'a T, Error> {
         });
     }
 
-    let ptr: *const u8 = bytes.as_ptr();
-    Ok(unsafe { &*(ptr as *const T) })
+    let ptr = bytes.as_ptr() as *const T;
+    if ptr.is_aligned() {
+        Ok(unsafe { &*ptr })
+    } else {
+        Err(Error::Alignment)
+    }
 }
 
 pub trait Wiresafe: __private::Wiresafe + Sized {}
@@ -72,6 +147,7 @@ impl<T: __private::Wiresafe> Wiresafe for T {}
 #[derive(Debug)]
 pub enum Error {
     Checksum,
+    Alignment,
     SizeMismatch { expected: usize, actual: usize },
 }
 
@@ -79,6 +155,7 @@ impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Error::Checksum => f.write_str("CRC checksums don't match, possible data corruption"),
+            Error::Alignment => f.write_str("Bytes aren't aligned properly"),
             Error::SizeMismatch { expected, actual } => {
                 write!(f, "Size mismatch, expected `{expected}`, got `{actual}`")
             }
@@ -189,7 +266,7 @@ mod tests {
 
     use super::*;
 
-    #[repr(C)]
+    #[repr(C, align(1))]
     #[derive(Debug, PartialEq, Eq)]
     struct Data {
         x: i32,
@@ -215,12 +292,55 @@ mod tests {
             x: -5,
             y: 10,
             zero: Zero,
-            z: 1
+            z: 1,
         };
 
         let msg = Message::from(data);
         let bytes: &[u8] = msg.borrow().into();
         let msg2 = Message::<Data>::try_from_bytes(bytes).unwrap();
+
         assert_eq!(msg.content, msg2.content);
+    }
+
+    #[test]
+    fn roundtrip_reader() {
+        let data = Data {
+            x: -5,
+            y: 10,
+            zero: Zero,
+            z: 1,
+        };
+
+        let msg = Message::from(data);
+        let bytes: &[u8] = msg.borrow().into();
+        let msg2 = Message::<Data>::read_from(bytes).unwrap();
+
+        assert_eq!(msg.content, msg2.content);
+    }
+
+    #[test]
+    fn align() {
+        use core::mem::align_of;
+        assert_eq!(
+            align_of::<Aligned<[u8; 12], Message<Data>>>(),
+            align_of::<Message<Data>>()
+        );
+    }
+
+    #[test]
+    fn byte_array() {
+        let data = Data {
+            x: -5,
+            y: 10,
+            zero: Zero,
+            z: 1,
+        };
+        let msg = Message::from(data);
+
+        let mut aligned = Message::<Data>::init_byte_array::<12>();
+        aligned.value_mut().copy_from_slice(msg.as_bytes());
+
+        let msg2 = Message::<Data>::try_from_bytes(aligned.value().as_slice()).unwrap();
+        assert_eq!(msg, *msg2);
     }
 }
