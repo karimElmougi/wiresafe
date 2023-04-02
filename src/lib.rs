@@ -29,14 +29,6 @@ impl<'a, T: Wiresafe> From<&'a Message<T>> for &'a [u8] {
     }
 }
 
-impl<'a, T: Wiresafe, const N: usize> TryFrom<&'a AlignedBytes<N, Message<T>>> for &'a Message<T> {
-    type Error = Error;
-
-    fn try_from(bytes: &'a AlignedBytes<N, Message<T>>) -> Result<Self, Self::Error> {
-        Message::<T>::try_from_aligned(bytes)
-    }
-}
-
 impl<T: Wiresafe> Message<T> {
     #[cfg(feature = "std")]
     pub fn read_from<R: std::io::Read>(mut reader: R) -> std::io::Result<Self> {
@@ -78,10 +70,14 @@ impl<T: Wiresafe> Message<T> {
         AlignedBytes::zeroed()
     }
 
-    pub fn try_from_aligned<const N: usize>(bytes: &AlignedBytes<N, Self>) -> Result<&Self, Error> {
+    /// # Safety
+    /// The bytes in the array must correspond to valid byte patterns for the fields of `T`.
+    pub unsafe fn try_from_aligned<const N: usize>(
+        bytes: &AlignedBytes<N, Self>,
+    ) -> Result<&Self, Error> {
         // Skip size check since the only way to create `AlignedBytes` is through `Self::uninit`
         let ptr = bytes.as_ref().as_ptr() as *const Self;
-        let msg = unsafe { &*ptr };
+        let msg = &*ptr;
 
         let crc = crc32fast::hash(as_bytes(&msg.content));
         if crc == msg.crc {
@@ -278,7 +274,7 @@ mod tests {
         let mut aligned = Message::<Data>::uninit::<12>();
         aligned.as_mut().copy_from_slice(msg.as_bytes());
 
-        let msg2 = Message::<Data>::try_from_aligned(&aligned).unwrap();
+        let msg2 = unsafe { Message::<Data>::try_from_aligned(&aligned).unwrap() };
         assert_eq!(msg, *msg2);
     }
 
