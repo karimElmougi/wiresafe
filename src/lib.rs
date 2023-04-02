@@ -19,6 +19,7 @@ impl<T: __private::Wiresafe> __private::Wiresafe for Message<T> {
 impl<T: Wiresafe> From<T> for Message<T> {
     fn from(content: T) -> Self {
         let crc = crc32fast::hash(as_bytes(&content));
+        std::dbg!(crc);
         Message { content, crc }
     }
 }
@@ -26,6 +27,12 @@ impl<T: Wiresafe> From<T> for Message<T> {
 impl<'a, T: Wiresafe> From<&'a Message<T>> for &'a [u8] {
     fn from(value: &'a Message<T>) -> Self {
         as_bytes(value)
+    }
+}
+
+impl<T: Wiresafe + Default> Default for Message<T> {
+    fn default() -> Self {
+        Self::from(T::default())
     }
 }
 
@@ -115,6 +122,82 @@ impl<T: Wiresafe + Copy> Message<T> {
         } else {
             Err(Error::Checksum)
         }
+    }
+}
+
+#[cfg(feature = "std")]
+#[derive(Debug, Default)]
+pub struct BoxedMessage<T: Wiresafe>(std::boxed::Box<Message<T>>);
+
+impl<T: Wiresafe> From<T> for BoxedMessage<T> {
+    fn from(content: T) -> Self {
+        BoxedMessage(std::boxed::Box::new(Message::from(content)))
+    }
+}
+
+impl<'a, T: Wiresafe> From<&'a BoxedMessage<T>> for &'a [u8] {
+    fn from(value: &'a BoxedMessage<T>) -> Self {
+        as_bytes(&value.0)
+    }
+}
+
+impl<T: Wiresafe> AsRef<Message<T>> for BoxedMessage<T> {
+    fn as_ref(&self) -> &Message<T> {
+        self.0.as_ref()
+    }
+}
+
+impl<T: Wiresafe + Default + Copy, const N: usize> BoxedMessage<[T; N]> {
+    pub fn new_array() -> Self {
+        unsafe {
+            let layout = std::alloc::Layout::new::<Message<[T; N]>>();
+            let ptr = std::alloc::alloc(layout) as *mut Message<[T; N]>;
+            assert!(!ptr.is_null());
+            (*ptr).content.fill(Default::default());
+            (*ptr).crc = crc32fast::hash(as_bytes(&(*ptr).content));
+            Self(std::boxed::Box::from_raw(ptr))
+        }
+    }
+}
+
+impl<T: Wiresafe> BoxedMessage<T> {
+    pub fn content(&self) -> &T {
+        &self.0.content
+    }
+
+    pub fn content_mut(&mut self) -> &mut T {
+        &mut self.0.content
+    }
+
+    /// Attempts to read a message from the given reader, checking for validity using a CRC32
+    /// checksum.
+    pub fn read_from<R: std::io::Read>(mut reader: R) -> std::io::Result<Self> {
+        let layout = std::alloc::Layout::new::<Message<T>>();
+        let ptr = unsafe { std::alloc::alloc(layout) };
+        assert!(!ptr.is_null());
+
+        let len = core::mem::size_of::<Message<T>>();
+        let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
+
+        reader.read_exact(buf)?;
+
+        let ptr = ptr as *mut Message<T>;
+        let msg = unsafe { &*ptr };
+
+        let crc = crc32fast::hash(as_bytes(&msg.content));
+        if crc == msg.crc {
+            Ok(BoxedMessage(unsafe { std::boxed::Box::from_raw(ptr) }))
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Checksum verification failed",
+            ))
+        }
+    }
+
+    /// Attempts to write the message to the given writer.
+    pub fn write_into<W: std::io::Write>(&self, mut writer: W) -> std::io::Result<()> {
+        writer.write_all(self.into())
     }
 }
 
@@ -330,6 +413,16 @@ mod tests {
 
         let msg2 = unsafe { Message::<Data>::try_from_aligned(&aligned).unwrap() };
         assert_eq!(msg, *msg2);
+    }
+
+    #[test]
+    fn roundtrip_boxed() {
+        const KB: usize = 1024;
+        let msg = BoxedMessage::<[u8; KB]>::new_array();
+        let bytes: &[u8] = msg.as_ref().into();
+        let msg2 = BoxedMessage::<[u8; KB]>::read_from(bytes).unwrap();
+
+        assert_eq!(msg.content(), msg2.content());
     }
 
     macro_rules! assert_aligned {
