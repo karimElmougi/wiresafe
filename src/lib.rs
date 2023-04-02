@@ -102,7 +102,9 @@ impl<T: Wiresafe + Copy> Message<T> {
     ///
     /// # Safety
     /// The bytes in the array must correspond to valid byte patterns for the fields of `T`.
-    pub unsafe fn try_from_aligned_copy<const N: usize>(bytes: AlignedBytes<N, Self>) -> Result<Self, Error> {
+    pub unsafe fn try_from_aligned_copy<const N: usize>(
+        bytes: AlignedBytes<N, Self>,
+    ) -> Result<Self, Error> {
         // Skip size check since the only way to create `AlignedBytes` is through `Self::uninit`
         let ptr = bytes.as_ref().as_ptr() as *const Self;
         let msg = &*ptr;
@@ -121,6 +123,7 @@ const fn as_bytes<T>(t: &T) -> &[u8] {
     unsafe { core::slice::from_raw_parts(ptr, core::mem::size_of::<T>()) }
 }
 
+/// Array of bytes that are force into `T`'s memory alignment.
 pub struct AlignedBytes<const N: usize, T> {
     _align: [T; 0],
     value: [u8; N],
@@ -147,7 +150,15 @@ impl<const N: usize, T> AsMut<[u8; N]> for AlignedBytes<N, T> {
     }
 }
 
-pub trait Wiresafe: __private::Wiresafe + Sized {}
+/// Trait that marks a type as being safe to reinterpret cast to/from bytes. Mostly this means
+/// Plain Old Data types.
+pub trait Wiresafe: __private::Wiresafe + Sized {
+    #[cfg(feature = "std")]
+    /// Convenience method for calling [Message::read_from] and extracting the content.
+    fn read_from<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        Message::<Self>::read_from(reader).map(|msg| msg.content)
+    }
+}
 
 impl<T: __private::Wiresafe> Wiresafe for T {}
 
