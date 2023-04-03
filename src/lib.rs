@@ -19,7 +19,6 @@ impl<T: __private::Wiresafe> __private::Wiresafe for Message<T> {
 impl<T: Wiresafe> From<T> for Message<T> {
     fn from(content: T) -> Self {
         let crc = crc32fast::hash(as_bytes(&content));
-        std::dbg!(crc);
         Message { content, crc }
     }
 }
@@ -126,18 +125,37 @@ impl<T: Wiresafe + Copy> Message<T> {
 }
 
 #[cfg(feature = "std")]
+#[repr(C)]
 #[derive(Debug, Default)]
 pub struct BoxedMessage<T: Wiresafe>(std::boxed::Box<Message<T>>);
 
 impl<T: Wiresafe> From<T> for BoxedMessage<T> {
     fn from(content: T) -> Self {
-        BoxedMessage(std::boxed::Box::new(Message::from(content)))
+        Self(std::boxed::Box::new(Message::from(content)))
+    }
+}
+
+impl<T: Wiresafe> From<std::boxed::Box<T>> for BoxedMessage<T> {
+    fn from(content: std::boxed::Box<T>) -> Self {
+        let crc = crc32fast::hash(as_bytes::<T>(&content));
+
+        let layout = std::alloc::Layout::new::<Message<T>>();
+        let msg_ptr = unsafe { std::alloc::alloc(layout) as *mut Message<T> };
+        assert!(!msg_ptr.is_null());
+
+        let src = content.as_ref() as *const T as *const u8;
+        let dst = msg_ptr as *mut u8;
+        unsafe {
+            std::ptr::copy_nonoverlapping(src, dst, std::mem::size_of::<Message<T>>());
+            (*msg_ptr).crc = crc;
+            Self(std::boxed::Box::from_raw(msg_ptr))
+        }
     }
 }
 
 impl<'a, T: Wiresafe> From<&'a BoxedMessage<T>> for &'a [u8] {
     fn from(value: &'a BoxedMessage<T>) -> Self {
-        as_bytes(&value.0)
+        value.0.as_bytes()
     }
 }
 
@@ -147,31 +165,18 @@ impl<T: Wiresafe> AsRef<Message<T>> for BoxedMessage<T> {
     }
 }
 
-impl<T: Wiresafe + Default + Copy, const N: usize> BoxedMessage<[T; N]> {
-    pub fn new_array() -> Self {
-        unsafe {
-            let layout = std::alloc::Layout::new::<Message<[T; N]>>();
-            let ptr = std::alloc::alloc(layout) as *mut Message<[T; N]>;
-            assert!(!ptr.is_null());
-            (*ptr).content.fill(Default::default());
-            (*ptr).crc = crc32fast::hash(as_bytes(&(*ptr).content));
-            Self(std::boxed::Box::from_raw(ptr))
-        }
+impl<T: Wiresafe> core::ops::Deref for BoxedMessage<T> {
+    type Target = Message<T>;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
     }
 }
 
 impl<T: Wiresafe> BoxedMessage<T> {
-    pub fn content(&self) -> &T {
-        &self.0.content
-    }
-
-    pub fn content_mut(&mut self) -> &mut T {
-        &mut self.0.content
-    }
-
     /// Converts a [BoxedMessage] to a byte lice.
     pub fn as_bytes(&self) -> &[u8] {
-        self.as_ref().as_bytes()
+        self.0.as_bytes()
     }
 
     /// Attempts to read a message from the given reader, checking for validity using a CRC32
@@ -418,12 +423,16 @@ mod tests {
 
     #[test]
     fn roundtrip_boxed() {
-        const KB: usize = 1024;
-        let msg = BoxedMessage::<[u8; KB]>::new_array();
-        let bytes: &[u8] = msg.as_ref().into();
-        let msg2 = BoxedMessage::<[u8; KB]>::read_from(bytes).unwrap();
+        let mut content = std::boxed::Box::<[u8; 8]>::default();
+        for (i, b) in content.iter_mut().enumerate() {
+            *b = i as u8;
+        }
 
-        assert_eq!(msg.content(), msg2.content());
+        let msg = BoxedMessage::from(content);
+        let bytes: &[u8] = msg.borrow().into();
+        let msg2 = BoxedMessage::<[u8; 8]>::read_from(bytes).unwrap();
+
+        assert_eq!(msg.as_ref().content, msg2.as_ref().content);
     }
 
     macro_rules! assert_aligned {
